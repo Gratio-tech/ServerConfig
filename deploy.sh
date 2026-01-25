@@ -1,50 +1,48 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Остановка при любой ошибке
 set -e
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 
-# --- Переменные ---
-FW_CONFIG="firewall.conf"
-NGINX_TEMPLATE="nginx_base.conf"
+# Подгружаем утилиты из подпапки
+if [ -f "$SCRIPT_DIR/utils.sh" ]; then
+    source "$SCRIPT_DIR/utils.sh"
+else
+    echo "Критическая ошибка: $SCRIPT_DIR/utils.sh не найден."
+    exit 1
+fi
+
+# --- Параметры ---
 TIMEZONE="Europe/Moscow"
 
-# --- Вспомогательные функции для валидации ввода ---
+remote_deploy() {
+    read -p "Введите IP сервера: " REMOTE_IP
+    read -p "Введите текущий порт SSH [22]: " REMOTE_PORT
+    REMOTE_PORT=${REMOTE_PORT:-22}
+    read -p "Введите пользователя [root]: " REMOTE_USER
+    REMOTE_USER=${REMOTE_USER:-root}
 
-# Проверка, является ли ввод числом в заданном диапазоне
-validate_range() {
-    local val=$1
-    local min=$2
-    local max=$3
-    if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge "$min" ] && [ "$val" -le "$max" ]; then
-        return 0
-    else
-        return 1
-    fi
+    # Создаем папку с уникальным именем на сервере
+    REMOTE_DIR="~/deploy_$(date +%Y%m%d_%H%M)"
+
+    echo "Копирование файлов проекта на $REMOTE_IP..."
+    ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR"
+
+    # Рекурсивное копирование всей папки (включая configs/)
+    scp -P "$REMOTE_PORT" -r "$SCRIPT_DIR"/* "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"
+
+    echo "Запуск скрипта на удаленном сервере..."
+    # Опция -t нужна для интерактивности внутри SSH
+    ssh -t -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "cd $REMOTE_DIR && chmod +x *.sh && sudo ./deploy.sh"
+    exit 0
 }
 
-# Проверка политики файрвола
-validate_policy() {
-    local input=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-    case "$input" in
-        allow|a) echo "allow" ;;
-        deny|d)  echo "deny"  ;;
-        *) return 1 ;;
-    esac
-}
+# --- Проверка флага remote ---
+if [[ "$1" == "-remote" ]]; then
+    remote_deploy
+fi
 
-# Универсальный запрос Y/N
-ask_yn() {
-    local prompt=$1
-    local default=$2
-    read -p "$prompt [$default]: " yn
-    yn=${yn:-$default}
-    case $yn in
-        [Yy]*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# --- Основные функции ---
+if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
 
 setup_base() {
     echo "--- Базовая настройка ОС ---"
@@ -159,18 +157,40 @@ install_certbot() {
     fi
 }
 
+install_nginx() {
+    echo "--- Установка актуальной версии Nginx ---"
+    if ! [ -f /etc/apt/sources.list.d/nginx.list ]; then
+        curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+
+        echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
+        http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" \
+            | sudo tee /etc/apt/sources.list.d/nginx.list
+
+        apt update
+    fi
+    apt install -y nginx
+}
+
 install_packages() {
     echo "--- Установка пакетов ---"
     apt update && apt upgrade -y
+
+    # Инициализируем переменную (добавь эту строку)
+    export INSTALLED_DOCKER="false"
 
     for pkg in certbot nginx docker net-tools fail2ban nvm; do
         if ask_yn "Установить $pkg?" "n"; then
             if [ "$pkg" == "nvm" ]; then
                 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+            elif [ "$pkg" == "nginx" ]; then
+                  install_nginx
             elif [ "$pkg" == "certbot" ]; then
                 install_certbot
             elif [ "$pkg" == "docker" ]; then
+                # Добавляем установку флага (изменение здесь)
                 curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && rm get-docker.sh
+                export INSTALLED_DOCKER="true"
             elif [ "$pkg" == "fail2ban" ]; then
                 apt install -y fail2ban
                 cat <<EOF > /etc/fail2ban/jail.local
@@ -186,108 +206,32 @@ EOF
     done
 }
 
-setup_nginx() {
-    if command -v nginx >/dev/null 2>&1 && [ -f "$NGINX_TEMPLATE" ]; then
-        read -p "Введите домен для Nginx (или оставьте пустым для пропуска): " domain
-        if [ -n "$domain" ]; then
-            target="/etc/nginx/sites-available/$domain"
-            sed "s/{{DOMAIN}}/$domain/g" "$NGINX_TEMPLATE" > "$target"
-            ln -sf "$target" "/etc/nginx/sites-enabled/"
-            rm -f /etc/nginx/sites-enabled/default
-            nginx -t && systemctl reload nginx
-        fi
+if ask_yn "Выполнить базовую настройку (Hostname, SSH, Swap, IPv6 disable, Packages)?" "y"; then
+    setup_base
+    setup_swap
+    setup_journald
+    disable_ipv6
+    install_packages
+fi
+
+if ask_yn "Настроить Nginx?" "y"; then
+    bash "$SCRIPT_DIR/setup_nginx.sh"
+fi
+
+if ask_yn "Настроить Файрвол?" "y"; then
+    bash "$SCRIPT_DIR/setup_firewall.sh"
+
+    # Если Docker был установлен или уже есть в системе, перезапускаем его, 
+    # чтобы он восстановил свои правила iptables поверх правил UFW/Firewalld.
+    if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
+        echo "Перезапуск Docker для восстановления сетевых мостов..."
+        systemctl restart docker
     fi
-}
+fi
 
-setup_firewall() {
-    echo "--- Настройка файрвола ---"
+echo "Настройка завершена."
 
-    # ... (здесь блок запроса POLICY_IN / POLICY_OUT из прошлого шага) ...
-
-    if command -v ufw >/dev/null 2>&1; then
-        FW_TOOL="ufw"
-        ufw --force reset
-
-        # 1. Настройка ICMP в UFW (правка конфига before.rules)
-        # По умолчанию UFW разрешает пинг. Нам нужно заменить ACCEPT на DROP для echo-request.
-        sed -i 's/-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT/-A ufw-before-input -p icmp --icmp-type echo-request -j DROP/' /etc/ufw/before.rules
-
-        # Разрешаем нужные типы ICMP (обычно они уже там есть, но для гарантии)
-        # UFW по умолчанию содержит правила для destination-unreachable и др. в before.rules
-
-        ufw default "$POLICY_IN" incoming
-        ufw default "$POLICY_OUT" outgoing
-        ufw allow "$NEW_SSH_PORT/tcp"
-
-    elif command -v firewall-cmd >/dev/null 2>&1; then
-        FW_TOOL="firewalld"
-        systemctl start firewalld
-
-        # 2. Настройка ICMP в Firewalld
-        # Блокируем эхо-запрос
-        firewall-cmd --permanent --add-icmp-block=echo-request
-        # Разрешаем остальное (обычно разрешено, но фиксируем)
-        for t in destination-unreachable time-exceeded parameter-problem; do
-            firewall-cmd --permanent --add-icmp-block-inversion # инверсия, чтобы разрешить только выбранные
-            # Или проще: firewalld по умолчанию не блокирует их, если не включен icmp-block-all
-        done
-
-        if [ "$POLICY_IN" == "deny" ]; then
-            firewall-cmd --set-default-zone=drop
-        else
-            firewall-cmd --set-default-zone=public
-        fi
-        firewall-cmd --permanent --add-port="$NEW_SSH_PORT/tcp"
-    fi
-
-    # 3. Применение правил из firewall.conf (твой цикл парсинга)
-    if [ -f "$FW_CONFIG" ]; then
-        while IFS='|' read -r action direction port_proto || [ -n "$action" ]; do
-            [[ "$action" =~ ^#.* ]] || [ -z "$action" ] && continue
-            if [ "$FW_TOOL" == "ufw" ]; then
-                ufw "$action" "$direction" "$port_proto"
-            else
-                [ "$direction" == "in" ] && [ "$action" == "allow" ] && firewall-cmd --permanent --add-port="$port_proto"
-            fi
-        done < "$FW_CONFIG"
-    fi
-
-    # Активация
-    [ "$FW_TOOL" == "ufw" ] && ufw --force enable || firewall-cmd --reload
-}
-
-# --- Исполнение ---
-
-if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
-
-setup_base
-setup_swap
-setup_journald
-disable_ipv6
-install_packages
-setup_nginx
-setup_firewall
-
-echo "Настройка завершена успешно."
-
-if ask_yn "Удалить файлы установки и папку config?" "n"; then
-    # Определяем реальный путь к папке, где лежит скрипт
-    SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-
-    # Удаляем файлы конфигов, чтобы не мешались при удалении папки
-    rm -f "$SCRIPT_DIR/$FW_CONFIG" "$SCRIPT_DIR/$NGINX_TEMPLATE"
-
-    # Проверяем, что мы находимся в папке config
-    if [[ "$SCRIPT_DIR" == *"/config" ]]; then
-        echo "Удаление рабочей директории: $SCRIPT_DIR"
-        # Удаляем скрипт и саму папку
-        # Используем конструкцию, чтобы bash не ругался на удаление запущенного файла
-        rm -rf "$SCRIPT_DIR"
-        echo "Папка ~/config и файлы удалены."
-    else
-        # Если запустили из другого места — удаляем только скрипт и конфиги
-        rm -f "$SCRIPT_DIR/$FW_CONFIG" "$SCRIPT_DIR/$NGINX_TEMPLATE"
-        rm -- "$0"
-        echo "Файлы удалены, папка не тронута (не /config)."
-    fi
+if ask_yn "Удалить временные файлы установки?" "n"; then
+    rm -rf "$SCRIPT_DIR"
+    echo "Директория удалена."
 fi
