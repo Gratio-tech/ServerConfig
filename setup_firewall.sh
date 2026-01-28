@@ -9,7 +9,7 @@ FW_CONFIG="$SCRIPT_DIR/configs/firewall.conf"
 
 setup_docker_support() {
     local tool=$1
-    echo "--- Настройка специфики Docker для $tool ---"
+    echo "----- Настройка специфики Docker для $tool -----"
 
     if [ "$tool" == "ufw" ]; then
         # 1. Разрешаем Forwarding (критично для Docker)
@@ -40,7 +40,7 @@ setup_docker_support() {
 }
 
 setup_firewall() {
-    echo "--- Настройка файрвола ---"
+    echo "----- Настройка файрвола -----"
 
     local p_in p_out
     while true; do

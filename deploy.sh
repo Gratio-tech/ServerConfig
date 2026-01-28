@@ -3,6 +3,12 @@
 # Остановка при любой ошибке
 set -e
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+TIMEZONE="Europe/Moscow"
+export NEW_SSH_PORT=8777 # Дефолт, если пропустим настройку
+export SSH_SERV="ssh" # На Debian/Ubuntu обычно ssh
+if systemctl list-unit-files | grep -q "^sshd.service"; then
+    SSH_SERV="sshd"
+fi
 
 # Подгружаем утилиты из подпапки
 if [ -f "$SCRIPT_DIR/utils.sh" ]; then
@@ -12,8 +18,6 @@ else
     exit 1
 fi
 
-# --- Параметры ---
-TIMEZONE="Europe/Moscow"
 
 remote_deploy() {
     read -p "Введите IP сервера: " REMOTE_IP
@@ -45,17 +49,17 @@ fi
 if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
 
 setup_base() {
-    echo "--- Базовая настройка ОС ---"
+    echo "----- Базовая настройка ОС -----"
 
     while [ -z "$NEW_HOSTNAME" ]; do
         read -p "Введите имя хоста (hostname): " NEW_HOSTNAME
     done
 
     while true; do
-        read -p "Введите порт SSH [1-65535, default: 8769]: " input_port
+        read -p "Введите порт SSH [1-65535, default: 8777]: " input_port
         input_port=${input_port:-8769}
         if validate_range "$input_port" 1 65535; then
-            NEW_SSH_PORT=$input_port
+            export NEW_SSH_PORT=$input_port
             break
         else
             echo "Ошибка: введите число от 1 до 65535."
@@ -66,14 +70,26 @@ setup_base() {
     sed -i "s/127.0.1.1.*/127.0.1.1 $NEW_HOSTNAME/" /etc/hosts
     timedatectl set-timezone "$TIMEZONE"
 
-    sed -i "s/^#Port 22/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
-    sed -i "s/^Port .*/Port $NEW_SSH_PORT/" /etc/ssh/sshd_config
-    systemctl restart ssh
+    # Настройка sshd_config
+    local ssh_conf="/etc/ssh/sshd_config"
+
+    # Порт
+    sed -i "s/^#Port 22/Port $NEW_SSH_PORT/" "$ssh_conf"
+    sed -i "s/^Port .*/Port $NEW_SSH_PORT/" "$ssh_conf"
+
+    # Безопасность и таймауты
+    # Сначала удаляем существующие вхождения, чтобы не плодить дубли
+    sed -i '/^MaxAuthTries/d; /^ClientAliveInterval/d; /^ClientAliveCountMax/d' "$ssh_conf"
+    {
+        echo "MaxAuthTries 3"
+        echo "ClientAliveInterval 40"
+        echo "ClientAliveCountMax 5"
+    } >> "$conf"
 }
 
 setup_swap() {
     if ask_yn "Настроить Swap-файл (1GB) и Swappiness?" "y"; then
-        echo "--- Настройка Swap ---"
+        echo "----- Настройка Swap -----"
         echo "Параметр swappiness определяет интенсивность использования подкачки:"
         echo "0 — свопинг почти отключён (система будет свопить только в крайнем случае)."
         echo "100 — максимально агрессивный свопинг (ядро начнёт выгружать даже при наличии свободной RAM)."
@@ -106,7 +122,7 @@ setup_swap() {
 }
 
 setup_journald() {
-    echo "--- Настройка логов ---"
+    echo "----- Настройка логов -----"
     CONF="/etc/systemd/journald.conf"
     sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=1G/' $CONF
     sed -i 's/^#MaxRetentionSec=.*/MaxRetentionSec=60d/' $CONF
@@ -115,7 +131,7 @@ setup_journald() {
 }
 
 disable_ipv6() {
-    echo "--- Отключение IPv6 ---"
+    echo "----- Отключение IPv6 -----"
     cat <<EOF > /etc/sysctl.d/99-disable-ipv6.conf
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -132,7 +148,7 @@ EOF
 }
 
 install_certbot() {
-    echo "--- Установка Certbot через Snap ---"
+    echo "----- Установка Certbot через Snap -----"
 
     # Проверка и установка snapd
     if ! command -v snap >/dev/null 2>&1; then
@@ -158,7 +174,7 @@ install_certbot() {
 }
 
 install_nginx() {
-    echo "--- Установка актуальной версии Nginx ---"
+    echo "----- Установка актуальной версии Nginx -----"
     if ! [ -f /etc/apt/sources.list.d/nginx.list ]; then
         curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor \
             | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
@@ -173,13 +189,13 @@ install_nginx() {
 }
 
 install_packages() {
-    echo "--- Установка пакетов ---"
+    echo "----- Установка пакетов -----"
     apt update && apt upgrade -y
 
     # Инициализируем переменную (добавь эту строку)
     export INSTALLED_DOCKER="false"
 
-    for pkg in certbot nginx docker net-tools fail2ban nvm; do
+    for pkg in nginx docker unzip certbot net-tools fail2ban nvm; do
         if ask_yn "Установить $pkg?" "n"; then
             if [ "$pkg" == "nvm" ]; then
                 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
@@ -221,7 +237,16 @@ fi
 if ask_yn "Настроить Файрвол?" "y"; then
     bash "$SCRIPT_DIR/setup_firewall.sh"
 
-    # Если Docker был установлен или уже есть в системе, перезапускаем его, 
+    echo "Проверка конфигурации SSH..."
+    if sshd -t; then
+        echo "Перезапуск сервиса $SSH_SERV на порту $NEW_SSH_PORT..."
+        systemctl restart "$SSH_SERV"
+    else
+        echo "КРИТИЧЕСКАЯ ОШИБКА: Конфиг SSH поврежден. Перезапуск отменен."
+        exit 1
+    fi
+
+    # Если Docker был установлен или уже есть в системе, перезапускаем его,
     # чтобы он восстановил свои правила iptables поверх правил UFW/Firewalld.
     if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
         echo "Перезапуск Docker для восстановления сетевых мостов..."
