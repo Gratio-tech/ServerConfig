@@ -206,6 +206,13 @@ install_packages() {
             elif [ "$pkg" == "docker" ]; then
                 # Добавляем установку флага (изменение здесь)
                 curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && rm get-docker.sh
+
+                # Если файла нет - создаем пустой JSON объект с настройками демона (часто нужно для DNS внутри контейнера)
+                [ ! -f /etc/docker/daemon.json ] && echo "{}" | sudo tee /etc/docker/daemon.json
+                # Добавляем DNS аккуратно через временный файл
+                sudo jq '."dns" = ["8.8.8.8", "1.1.1.1"]' /etc/docker/daemon.json > /tmp/daemon.json && sudo mv /tmp/daemon.json /etc/docker/daemon.json
+                # Рестарт
+                sudo systemctl restart docker
                 export INSTALLED_DOCKER="true"
             elif [ "$pkg" == "fail2ban" ]; then
                 apt install -y fail2ban
