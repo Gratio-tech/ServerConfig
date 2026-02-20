@@ -243,7 +243,9 @@ if ask_yn "Выполнить базовую настройку (Hostname, SSH, 
     setup_base
     setup_swap
     setup_journald
-    disable_ipv6
+    if ask_yn "Отключить IPv6?" "y"; then
+        disable_ipv6
+    fi
     install_packages
 fi
 
