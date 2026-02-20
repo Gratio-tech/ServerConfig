@@ -44,7 +44,7 @@ remote_deploy() {
 }
 
 # --- Проверка флага remote ---
-if [[ "$1" == "-remote" ]]; then
+if [ "${#}" -ge 1 ] && [ "$1" == "-remote" ]; then
     remote_deploy
 fi
 
