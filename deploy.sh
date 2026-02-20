@@ -8,6 +8,7 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 TIMEZONE="Europe/Moscow"
 export NEW_SSH_PORT=8777 # Дефолт, если пропустим настройку
 export SSH_SERV="ssh" # На Debian/Ubuntu обычно ssh
+export INSTALLED_DOCKER="false"
 if systemctl list-unit-files | grep -q "^sshd.service"; then
     SSH_SERV="sshd"
 fi
@@ -53,6 +54,7 @@ if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
 setup_base() {
     echo "----- Базовая настройка ОС -----"
 
+    NEW_HOSTNAME=""
     while [ -z "$NEW_HOSTNAME" ]; do
         read -p "Введите имя хоста (hostname): " NEW_HOSTNAME
     done
@@ -263,7 +265,7 @@ if ask_yn "Настроить Файрвол?" "y"; then
 
     # Если Docker был установлен или уже есть в системе, перезапускаем его,
     # чтобы он восстановил свои правила iptables поверх правил UFW/Firewalld.
-    if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
+    if [ -n "${INSTALLED_DOCKER-}" ] && [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
         echo "Перезапуск Docker для восстановления сетевых мостов..."
         systemctl restart docker
     fi

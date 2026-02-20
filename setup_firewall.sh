@@ -67,7 +67,7 @@ setup_firewall() {
         ufw default "$POLICY_OUT" outgoing
         ufw allow "$NEW_SSH_PORT/tcp"
 
-        if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
+        if [ -n "${INSTALLED_DOCKER-}" ] && [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
             setup_docker_support "ufw"
         fi
 
@@ -78,7 +78,7 @@ setup_firewall() {
         [ "$POLICY_IN" == "deny" ] && firewall-cmd --set-default-zone=drop || firewall-cmd --set-default-zone=public
         firewall-cmd --permanent --add-port="$NEW_SSH_PORT/tcp"
 
-        if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
+        if [ -n "${INSTALLED_DOCKER-}" ] && [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
             setup_docker_support "firewalld"
         fi
     else
