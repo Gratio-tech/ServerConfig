@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+set -eu
+# set -e остановка при любой ошибке
+# set -u завершит скрипт с ошибкой при использовании неопределенной переменной (unset variable).
+# предотвращает скрытые ошибки от опечаток или забытых инициализаций, заставляя явно проверять переменные
 
-#!/usr/bin/env bash
-set -e
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 source "$SCRIPT_DIR/utils.sh"
 
@@ -28,7 +30,7 @@ setup_docker_support() {
 
     elif [ "$tool" == "firewalld" ]; then
         # Firewalld обычно работает через зоны
-        firewall-cmd --permanent --zone=public --add-masquerade
+        firewall-cmd --permanent --add-masquerade
 
         # Добавляем docker0 в доверенные
         firewall-cmd --permanent --zone=trusted --add-interface=docker0
@@ -79,18 +81,30 @@ setup_firewall() {
         if [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
             setup_docker_support "firewalld"
         fi
+    else
+        echo "Ошибка: Ни ufw, ни firewalld не найдены."
+        return 1
     fi
 
     if [ -f "$FW_CONFIG" ]; then
         while IFS='|' read -r action direction port_proto || [ -n "$action" ]; do
             [[ "$action" =~ ^#.* ]] || [ -z "$action" ] && continue
             if [ "$FW_TOOL" == "ufw" ]; then
-                ufw "$action" "$direction" "$port_proto"
+                if [ "$direction" == "in" ]; then
+                    ufw "$action" "$port_proto"
+                elif [ "$direction" == "out" ]; then
+                    ufw "$action" out "$port_proto"
+                else
+                    echo "Ошибка: Неверное direction: $direction"
+                    continue
+                fi
             else
                 [ "$direction" == "in" ] && [ "$action" == "allow" ] && firewall-cmd --permanent --add-port="$port_proto"
                 [ "$direction" == "out" ] && [ "$action" == "allow" ] && echo "Предупреждение: firewalld out rules требуют прямой настройки rich rules, пропущено: $port_proto"
             fi
         done < "$FW_CONFIG"
+    else
+        echo "Ошибка: Файл конфигурации $FW_CONFIG не найден."
     fi
 
     [ "$FW_TOOL" == "ufw" ] && ufw --force enable || firewall-cmd --reload

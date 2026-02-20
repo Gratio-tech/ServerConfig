@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+set -eu
+# set -e остановка при любой ошибке
+# set -u завершит скрипт с ошибкой при использовании неопределенной переменной (unset variable).
+# предотвращает скрытые ошибки от опечаток или забытых инициализаций, заставляя явно проверять переменные
 
-# Остановка при любой ошибке
-set -e
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 TIMEZONE="Europe/Moscow"
 export NEW_SSH_PORT=8777 # Дефолт, если пропустим настройку
@@ -67,7 +69,13 @@ setup_base() {
     done
 
     hostnamectl set-hostname "$NEW_HOSTNAME"
-    sed -i "s/127.0.1.1.*/127.0.1.1 $NEW_HOSTNAME/" /etc/hosts
+
+    if ! grep -q "127.0.1.1" /etc/hosts; then
+        echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
+    else
+        sed -i "s/127.0.1.1.*/127.0.1.1 $NEW_HOSTNAME/" /etc/hosts
+    fi
+
     timedatectl set-timezone "$TIMEZONE"
 
     # Настройка sshd_config
@@ -84,7 +92,7 @@ setup_base() {
         echo "MaxAuthTries 3"
         echo "ClientAliveInterval 40"
         echo "ClientAliveCountMax 5"
-    } >> "$conf"
+    } >> "$ssh_conf"
 }
 
 setup_swap() {
