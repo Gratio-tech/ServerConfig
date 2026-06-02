@@ -24,7 +24,7 @@ fi
 
 remote_deploy() {
     read -p "Введите IP сервера: " REMOTE_IP
-    read -p "Введите текущий порт SSH [22]: " REMOTE_PORT
+    read -p "Введите текущий порт SSH на сервере [по дефолту 22]: " REMOTE_PORT
     REMOTE_PORT=${REMOTE_PORT:-22}
     read -p "Введите пользователя [root]: " REMOTE_USER
     REMOTE_USER=${REMOTE_USER:-root}
@@ -83,18 +83,37 @@ setup_base() {
     # Настройка sshd_config
     local ssh_conf="/etc/ssh/sshd_config"
 
-    # Порт
-    sed -i "s/^#Port 22/Port $NEW_SSH_PORT/" "$ssh_conf"
-    sed -i "s/^Port .*/Port $NEW_SSH_PORT/" "$ssh_conf"
+    # Очищаем старые записи порта (как закомментированные, так и нет)
+    # и дублирующиеся параметры, игнорируя пробелы в начале строк.
+    sed -i '/^[[:space:]]*#\?Port[[:space:]]/d' "$ssh_conf"
+    sed -i '/^[[:space:]]*MaxAuthTries/d' "$ssh_conf"
+    sed -i '/^[[:space:]]*ClientAliveInterval/d' "$ssh_conf"
+    sed -i '/^[[:space:]]*ClientAliveCountMax/d' "$ssh_conf"
 
-    # Безопасность и таймауты
-    # Сначала удаляем существующие вхождения, чтобы не плодить дубли
-    sed -i '/^MaxAuthTries/d; /^ClientAliveInterval/d; /^ClientAliveCountMax/d' "$ssh_conf"
+    # Безопасное добавление настроек в начало файла.
+    # Это исключает проблему склеивания строк без EOF-переноса
+    # и гарантирует, что параметры не окажутся внутри блока Match в конце файла.
     {
+        echo "Port $NEW_SSH_PORT"
         echo "MaxAuthTries 3"
         echo "ClientAliveInterval 40"
         echo "ClientAliveCountMax 5"
-    } >> "$ssh_conf"
+        cat "$ssh_conf"
+    } > "${ssh_conf}.tmp" && mv "${ssh_conf}.tmp" "$ssh_conf"
+
+    chmod 644 "$ssh_conf"
+}
+
+remove_old_users() {
+    # Удаляем исторических юзеров, которые не используются в современных системах:
+    # Только если юзер существует
+    for user in games lp uucp news; do
+        if getent passwd "$user" >/dev/null; then
+            # Здесь, возможно, придётся добавить sudo перед userdel
+            # Но скрипт должен выполняться от root
+            userdel -r "$user" || true
+        fi
+    done
 }
 
 setup_swap() {
@@ -198,6 +217,114 @@ install_nginx() {
     apt install -y nginx
 }
 
+select_cheats_language() {
+    echo "----- Выбор языка подсказок cheat -----"
+    echo "Доступные языки:"
+    echo "  ru — русский"
+
+    read -p "Введите код языка подсказок [ru]: " CHEATS_LANGUAGE
+    CHEATS_LANGUAGE=${CHEATS_LANGUAGE:-ru}
+
+    case "$CHEATS_LANGUAGE" in
+        ru)
+            ;;
+        *)
+            echo "Язык '$CHEATS_LANGUAGE' пока не поддерживается. Использую ru."
+            CHEATS_LANGUAGE="ru"
+            ;;
+    esac
+
+    export CHEATS_LANGUAGE
+}
+
+install_cheat() {
+    echo "----- Установка cheat -----"
+
+    if ! command -v cheat >/dev/null 2>&1; then
+        local arch cheat_arch tmp_gz tmp_bin
+        arch="$(dpkg --print-architecture)"
+
+        case "$arch" in
+            amd64)
+                cheat_arch="amd64"
+                ;;
+            i386)
+                cheat_arch="386"
+                ;;
+            arm64)
+                cheat_arch="arm64"
+                ;;
+            armhf)
+                cheat_arch="arm7"
+                ;;
+            armel)
+                cheat_arch="arm5"
+                ;;
+            *)
+                echo "Критическая ошибка: архитектура '$arch' не поддерживается установщиком cheat."
+                return 1
+                ;;
+        esac
+
+        apt install -y ca-certificates curl gzip less
+
+        tmp_gz="/tmp/cheat-linux-${cheat_arch}.gz"
+        tmp_bin="/tmp/cheat-linux-${cheat_arch}"
+
+        curl -fsSL \
+            -o "$tmp_gz" \
+            "https://github.com/cheat/cheat/releases/latest/download/cheat-linux-${cheat_arch}.gz"
+
+        gzip -dc "$tmp_gz" > "$tmp_bin"
+        chmod +x "$tmp_bin"
+        mv "$tmp_bin" /usr/local/bin/cheat
+        rm -f "$tmp_gz"
+    else
+        echo "cheat уже установлен: $(cheat --version 2>/dev/null || true)"
+    fi
+
+    select_cheats_language
+
+    local source_dir target_dir
+    source_dir="$SCRIPT_DIR/cheatsheets/$CHEATS_LANGUAGE"
+    target_dir="/usr/local/share/cheat/serverconfig/$CHEATS_LANGUAGE"
+
+    if [ ! -d "$source_dir" ]; then
+        echo "Критическая ошибка: каталог подсказок не найден: $source_dir"
+        return 1
+    fi
+
+    rm -rf "$target_dir"
+    mkdir -p "$target_dir"
+    cp -a "$source_dir/." "$target_dir/"
+    chmod -R a+rX /usr/local/share/cheat
+
+    mkdir -p /etc/cheat
+    cat <<EOF > /etc/cheat/conf.yml
+---
+editor: nano
+colorize: true
+style: monokai
+formatter: terminal256
+pager: less -FRX
+
+cheatpaths:
+  - name: serverconfig-$CHEATS_LANGUAGE
+    path: $target_dir
+    tags: [ serverconfig, $CHEATS_LANGUAGE ]
+    readonly: true
+EOF
+
+    cat <<'EOF' > /etc/profile.d/serverconfig-cheat.sh
+export CHEAT_CONFIG_PATH=/etc/cheat/conf.yml
+EOF
+    chmod 0644 /etc/profile.d/serverconfig-cheat.sh
+    export CHEAT_CONFIG_PATH=/etc/cheat/conf.yml
+
+    echo "cheat настроен. Проверка: cheat nginx"
+}
+
+
 install_packages() {
     echo "----- Установка пакетов -----"
     apt update && apt upgrade -y
@@ -205,7 +332,7 @@ install_packages() {
     # Инициализируем переменную (добавь эту строку)
     export INSTALLED_DOCKER="false"
 
-    for pkg in nginx docker unzip certbot net-tools fail2ban nvm; do
+    for pkg in nginx docker unzip certbot net-tools fail2ban nvm cheat; do
         if ask_yn "Установить $pkg?" "n"; then
             if [ "$pkg" == "nvm" ]; then
                 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
@@ -213,6 +340,8 @@ install_packages() {
                   install_nginx
             elif [ "$pkg" == "certbot" ]; then
                 install_certbot
+            elif [ "$pkg" == "cheat" ]; then
+                install_cheat
             elif [ "$pkg" == "docker" ]; then
                 # Добавляем установку флага (изменение здесь)
                 curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && rm get-docker.sh
@@ -239,6 +368,7 @@ EOF
     done
 }
 
+
 if ask_yn "Выполнить базовую настройку (Hostname, SSH, Swap, IPv6 disable, Packages)?" "y"; then
     setup_base
     setup_swap
@@ -246,8 +376,12 @@ if ask_yn "Выполнить базовую настройку (Hostname, SSH, 
     if ask_yn "Отключить IPv6?" "y"; then
         disable_ipv6
     fi
+    if ask_yn "Удалить неиспользуемых юзеров (games, uucp и юзер для печати lp)?" "y"; then
+        remove_old_users
+    fi
     install_packages
 fi
+
 
 if ask_yn "Настроить Nginx?" "y"; then
     bash "$SCRIPT_DIR/setup_nginx.sh"

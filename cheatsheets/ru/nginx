@@ -1,0 +1,38 @@
+---
+syntax: bash
+tags: [ nginx, web, certbot, tls, serverconfig, ru ]
+---
+# Проверить конфиг и перезагрузить Nginx
+sudo nginx -t && sudo systemctl restart nginx
+
+# Открыть главный конфиг Nginx
+sudo nano /etc/nginx/nginx.conf
+
+# Посмотреть конфиги сайтов в классической Ubuntu-структуре
+cd /etc/nginx/sites-available && ls
+cd /etc/nginx/sites-enabled && ls
+
+# Включить сайт через symlink из sites-enabled
+cd /etc/nginx/sites-enabled
+sudo ln -s /etc/nginx/sites-available/matthew ./matthew
+sudo nginx -t && sudo systemctl reload nginx
+
+# Посмотреть конфиги в подходе conf.d
+cd /etc/nginx/conf.d && ls
+
+# Скрыть версию Nginx в заголовках
+# В секции http добавить или раскомментировать строку:
+server_tokens off;
+
+# Установить Certbot через snap
+sudo snap install --classic certbot
+sudo ln -sf /snap/bin/certbot /usr/bin/certbot
+
+# Выпустить или переустановить сертификат через nginx-плагин
+sudo certbot --nginx
+
+# Удалить сертификат и файлы из /etc/letsencrypt
+sudo certbot delete
+
+# Проверить dry-run обновления сертификатов
+sudo certbot renew --dry-run

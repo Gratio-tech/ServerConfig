@@ -11,6 +11,7 @@
 * `setup_firewall.sh` — модуль настройки Firewall.
 * `utils.sh` — общие функции и валидация.
 * `configs` — папка с конфигами:
+* `cheatsheets` — папка с подсказками для [cheat](https://github.com/cheat/cheat)
 
 ---
 
@@ -20,7 +21,7 @@
 * **Remote Deploy**: Автоматическое копирование проекта и запуск на удаленном сервере одной командой.
 * **Security**: Смена порта SSH, Fail2Ban, настройка Firewall (UFW/Firewalld) с поддержкой сокращений (`a`/`d`).
 * **System**: Hostname, Timezone, IPv6 off, оптимизация `journald`, интерактивный Swap.
-* **Software**: Установка Docker, Nginx, NVM, Certbot.
+* **Software**: Установка Docker, Nginx, NVM, Certbot, подсказки с [cheat](https://github.com/cheat/cheat)
 
 ---
 
@@ -66,6 +67,28 @@ a|in|443/tcp
 ### Nginx (`configs/nginx_base.conf`)
 
 Используйте переменную `{{DOMAIN}}` в шаблоне. Скрипт автоматически заменит её на введенный вами домен.
+
+### Подсказки cheat sheets
+Скрипт позволяет добавить свои подсказки командам через (cheat)[https://github.com/cheat/cheat].
+
+Чтобы добавить свои, кладите файлы в структуру:
+
+```text
+cheatsheets/
+└── ru/
+    ├── docker
+    └── nginx
+```
+
+Файлы для `cheat` — plain-text без расширения. Имя файла совпадает с именем подсказки: `cheat nginx`
+
+Для нового языка добавте каталог рядом с `ru`, например:
+
+```text
+cheatsheets/en/nginx
+```
+
+Затем добавьте код языка в `select_cheats_language()` в `deploy.sh`.
 
 ---
 
