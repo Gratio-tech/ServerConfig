@@ -1,0 +1,64 @@
+---
+syntax: bash
+tags: [ iptables, web, firewall, ru ]
+---
+
+# Просмотр всех текущих правил:
+iptables --line-numbers -L -v -n
+
+# Удаление дублей правил:
+iptables-save | uniq | iptables-restore
+
+# Очистка всех правил:
+iptables -F
+
+# Полная очистка вообще всех правил:
+sudo iptables -F        # Удалить все правила в цепочках
+sudo iptables -X        # Удалить пользовательские цепочки
+sudo iptables -t nat -F # Очистить таблицу NAT
+sudo iptables -t mangle -F # Очистить таблицу MANGLE
+sudo iptables -t raw -F   # Очистить таблицу RAW
+
+# Обновить политики по умолчанию (желательно делать после очистки всего):
+sudo iptables -P INPUT ACCEPT
+sudo iptables -P OUTPUT ACCEPT
+sudo iptables -P FORWARD ACCEPT
+
+# Разрешить заданный протокол на одном порту:
+# Флаг -A указывает, что правило будет добавлено в конец цепочки.
+sudo iptables -A INPUT -p tcp --dport 7878 -j ACCEPT
+
+# Разрешить трафик, поступающий в систему через заданный порт заданного интерфейса:
+sudo iptables -A INPUT -i eth0 -p tcp --dport 443 -j ACCEPT
+
+# Разрешить порты 21, 22, 80, 443:
+iptables -A INPUT -p tcp -m multiport --port 21,22,80,443 -j ACCEPT
+
+# Пример разрешения входящих DNS-запросов и блокировки входящих пингов:
+iptables -I INPUT 2 -p udp --dport 53 -j ACCEPT &&
+iptables -I INPUT 2 -p tcp --dport 53 -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type time-exceeded -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type parameter-problem -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -j DROP
+
+# Обязательно ПОСЛЕ всех настроек запретит все остальные входящие:
+iptables -A INPUT -j DROP
+
+# Для сохранения правил:
+iptables-save > /etc/iptables/saved.rules
+
+# Восстановить из файла:
+iptables-restore < /etc/iptables/saved.rules
+
+# Чтобы правила применялись после перезагрузки:
+apt-get update && apt-get install iptables-persistent -y
+
+# При использовании iptables-persistent сохранять правила вот так:
+netfilter-persistent save
+
+# Восстановить:
+netfilter-persistent reload
+
+# Отключить службу iptables:
+sudo systemctl disable iptables

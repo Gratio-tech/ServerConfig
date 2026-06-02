@@ -2,6 +2,7 @@
 syntax: bash
 tags: [ nginx, web, certbot, tls, serverconfig, ru ]
 ---
+
 # Проверить конфиг и перезагрузить Nginx
 sudo nginx -t && sudo systemctl restart nginx
 

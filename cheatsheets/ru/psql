@@ -1,0 +1,17 @@
+---
+syntax: bash
+tags: [ psql, postgre, web, database, ru ]
+---
+
+# Подключиться к запущенному сервису Postgre
+psql -U admin -d DBNAME -h postgres_host -p 5432
+
+# Показать структуру таблицы users
+\d users
+
+# Выбрать users (для завершения просто нажать q):
+SELECT * FROM users;
+
+# Изменить отдельный флаг в таблице (два варианта - юзер по id и поиск по email):
+UPDATE users SET is_active = true WHERE id = 5;
+UPDATE users SET is_active = true WHERE email = 'mail@mail.ru';

@@ -57,3 +57,12 @@ get_current_ssh_port() {
     local port=$(grep "^Port " /etc/ssh/sshd_config | awk '{print $2}')
     echo "${port:-22}"
 }
+
+shell_quote() {
+    # Делает безопасный shell-литерал:
+    # hello    -> 'hello'
+    # it's ok  -> 'it'\''s ok'
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}

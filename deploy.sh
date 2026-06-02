@@ -6,12 +6,10 @@ set -eu
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 TIMEZONE="Europe/Moscow"
+MOTD_TEMPLATE="$SCRIPT_DIR/custom-motd.sh"
+
 export NEW_SSH_PORT=8777 # Дефолт, если пропустим настройку
 export SSH_SERV="ssh" # На Debian/Ubuntu обычно ssh
-export INSTALLED_DOCKER="false"
-if systemctl list-unit-files | grep -q "^sshd.service"; then
-    SSH_SERV="sshd"
-fi
 
 # Подгружаем утилиты из подпапки
 if [ -f "$SCRIPT_DIR/utils.sh" ]; then
@@ -21,6 +19,37 @@ else
     exit 1
 fi
 
+detect_ssh_service() {
+    SSH_SERV="ssh"
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if systemctl list-unit-files sshd.service 2>/dev/null | grep -q '^sshd.service'; then
+        SSH_SERV="sshd"
+    elif systemctl list-unit-files ssh.service 2>/dev/null | grep -q '^ssh.service'; then
+        SSH_SERV="ssh"
+    fi
+
+    export SSH_SERV
+}
+
+restart_ssh_service() {
+    echo "Проверка конфигурации SSH..."
+
+    local sshd_bin
+    sshd_bin="$(command -v sshd || echo /usr/sbin/sshd)"
+
+    if "$sshd_bin" -t; then
+        detect_ssh_service
+        echo "Перезапуск сервиса $SSH_SERV на порту $NEW_SSH_PORT..."
+        systemctl restart "$SSH_SERV"
+    else
+        echo "КРИТИЧЕСКАЯ ОШИБКА: конфиг SSH поврежден. Перезапуск отменен."
+        exit 1
+    fi
+}
 
 remote_deploy() {
     read -p "Введите IP сервера: " REMOTE_IP
@@ -38,18 +67,32 @@ remote_deploy() {
     # Рекурсивное копирование всей папки (включая configs/)
     scp -P "$REMOTE_PORT" -r "$SCRIPT_DIR"/* "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"
 
+    # На всякий случай заменяем CRLF во всех файлах, если такие были после обновления скрипта
+    ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "
+        cd $REMOTE_DIR &&
+        find . -type f \( -name '*.sh' -o -name '*.conf' \) -exec sed -i 's/\r$//' {} +
+    "
+
     echo "Запуск скрипта на удаленном сервере..."
     # Опция -t нужна для интерактивности внутри SSH
-    ssh -t -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "cd $REMOTE_DIR && chmod +x *.sh && sudo ./deploy.sh"
+    local remote_run_cmd
+    if [ "$REMOTE_USER" = "root" ]; then
+        remote_run_cmd="bash ./deploy.sh"
+    else
+        remote_run_cmd="sudo bash ./deploy.sh"
+    fi
+    ssh -t -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "cd $REMOTE_DIR && chmod +x *.sh && $remote_run_cmd"
     exit 0
 }
 
-# --- Проверка флага remote ---
+# --- Проверка флага remote и рут-прав ---
 if [ "${#}" -ge 1 ] && [ "$1" == "-remote" ]; then
     remote_deploy
 fi
 
 if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
+
+detect_ssh_service
 
 setup_base() {
     echo "----- Базовая настройка ОС -----"
@@ -60,8 +103,8 @@ setup_base() {
     done
 
     while true; do
-        read -p "Введите порт SSH [1-65535, default: 8777]: " input_port
-        input_port=${input_port:-8769}
+        read -p "Введите новый порт SSH [1-65535, default: 8777]: " input_port
+        input_port=${input_port:-8777}
         if validate_range "$input_port" 1 65535; then
             export NEW_SSH_PORT=$input_port
             break
@@ -102,6 +145,8 @@ setup_base() {
     } > "${ssh_conf}.tmp" && mv "${ssh_conf}.tmp" "$ssh_conf"
 
     chmod 644 "$ssh_conf"
+    # Ребутим SSH для применения порта
+    restart_ssh_service
 }
 
 remove_old_users() {
@@ -325,14 +370,89 @@ EOF
 }
 
 
+setup_fail2ban() {
+    echo "----- Настройка fail2ban -----"
+
+    apt install -y fail2ban
+    mkdir -p /etc/fail2ban/jail.d
+
+    cat <<EOF > /etc/fail2ban/jail.d/sshd.local
+[DEFAULT]
+# 5 неудачных попыток за findtime => бан на bantime.
+maxretry = 5
+findtime = 10m
+bantime = 1h
+
+# Повторные баны становятся длиннее, но не больше 1 дня.
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 1d
+
+[sshd]
+enabled = true
+port = $NEW_SSH_PORT
+backend = auto
+EOF
+
+    if fail2ban-client -t; then
+        systemctl enable --now fail2ban
+        systemctl restart fail2ban
+        fail2ban-client status sshd || true
+    else
+        echo "КРИТИЧЕСКАЯ ОШИБКА: конфиг fail2ban некорректен."
+        exit 1
+    fi
+}
+
+setup_motd() {
+    echo "----- Настройка SSH MOTD -----"
+
+    local target custom_text quoted_text escaped_text
+
+    target="/etc/update-motd.d/00-header"
+
+    if [ ! -f "$MOTD_TEMPLATE" ]; then
+        echo "Критическая ошибка: шаблон MOTD не найден: $MOTD_TEMPLATE"
+        return 1
+    fi
+
+    read -r -p "Введите кастомный текст для MOTD [Enter — без кастомного блока]: " custom_text
+
+    install -d -m 0755 /etc/update-motd.d
+
+    if [ -n "$custom_text" ]; then
+        quoted_text="$(shell_quote "$custom_text")"
+        escaped_text="$(printf '%s' "$quoted_text" | sed -e 's/[\/&\\]/\\&/g')"
+
+        sed "s/CUSTOM_USER_TEST/$escaped_text/g" "$MOTD_TEMPLATE" > "$target"
+    else
+        awk '
+            /^# __CUSTOM_USER_BLOCK_START__$/ { skip = 1; next }
+            /^# __CUSTOM_USER_BLOCK_END__$/ { skip = 0; next }
+            !skip { print }
+        ' "$MOTD_TEMPLATE" > "$target"
+    fi
+
+    chmod 0755 "$target"
+
+    find /etc/update-motd.d -mindepth 1 -maxdepth 1 \
+        ! -name "$(basename "$target")" \
+        \( -type f -o -type l \) \
+        -exec rm -f -- {} +
+
+    rm -f /etc/motd
+    touch /etc/motd
+    chmod 0644 /etc/motd
+
+    echo "MOTD настроен: $target"
+}
+
 install_packages() {
     echo "----- Установка пакетов -----"
     apt update && apt upgrade -y
+    apt install -y net-tools
 
-    # Инициализируем переменную (добавь эту строку)
-    export INSTALLED_DOCKER="false"
-
-    for pkg in nginx docker unzip certbot net-tools fail2ban nvm cheat; do
+    for pkg in nginx docker unzip certbot fail2ban nvm cheat; do
         if ask_yn "Установить $pkg?" "n"; then
             if [ "$pkg" == "nvm" ]; then
                 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
@@ -343,24 +463,19 @@ install_packages() {
             elif [ "$pkg" == "cheat" ]; then
                 install_cheat
             elif [ "$pkg" == "docker" ]; then
-                # Добавляем установку флага (изменение здесь)
                 curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh && rm get-docker.sh
 
-                # Если файла нет - создаем пустой JSON объект с настройками демона (часто нужно для DNS внутри контейнера)
-                [ ! -f /etc/docker/daemon.json ] && echo "{}" | sudo tee /etc/docker/daemon.json
-                # Добавляем DNS аккуратно через временный файл
-                sudo jq '."dns" = ["8.8.8.8", "1.1.1.1"]' /etc/docker/daemon.json > /tmp/daemon.json && sudo mv /tmp/daemon.json /etc/docker/daemon.json
-                # Рестарт
-                sudo systemctl restart docker
-                export INSTALLED_DOCKER="true"
+                # Создаем пустой JSON объект с настройками демона (часто нужно для DNS внутри контейнера)
+                # Важно: это перезаписывает существующий /etc/docker/daemon.json.
+                mkdir -p /etc/docker
+                echo "Для Docker daemon будут установлены DNS 8.8.8.8 и 1.1.1.1"
+                cat <<EOF > /etc/docker/daemon.json
+                { "dns": ["8.8.8.8", "1.1.1.1"] }
+                EOF
+
+                systemctl restart docker
             elif [ "$pkg" == "fail2ban" ]; then
-                apt install -y fail2ban
-                cat <<EOF > /etc/fail2ban/jail.local
-[sshd]
-enabled = true
-port = $NEW_SSH_PORT
-EOF
-                systemctl restart fail2ban
+                setup_fail2ban
             else
                 apt install -y "$pkg"
             fi
@@ -382,6 +497,10 @@ if ask_yn "Выполнить базовую настройку (Hostname, SSH, 
     install_packages
 fi
 
+if ask_yn "Обновить стандартное приветствие SSH MOTD?" "y"; then
+    setup_motd
+fi
+
 
 if ask_yn "Настроить Nginx?" "y"; then
     bash "$SCRIPT_DIR/setup_nginx.sh"
@@ -390,18 +509,9 @@ fi
 if ask_yn "Настроить Файрвол?" "y"; then
     bash "$SCRIPT_DIR/setup_firewall.sh"
 
-    echo "Проверка конфигурации SSH..."
-    if sshd -t; then
-        echo "Перезапуск сервиса $SSH_SERV на порту $NEW_SSH_PORT..."
-        systemctl restart "$SSH_SERV"
-    else
-        echo "КРИТИЧЕСКАЯ ОШИБКА: Конфиг SSH поврежден. Перезапуск отменен."
-        exit 1
-    fi
-
     # Если Docker был установлен или уже есть в системе, перезапускаем его,
     # чтобы он восстановил свои правила iptables поверх правил UFW/Firewalld.
-    if [ -n "${INSTALLED_DOCKER-}" ] && [ "$INSTALLED_DOCKER" == "true" ] || command -v docker >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1; then
         echo "Перезапуск Docker для восстановления сетевых мостов..."
         systemctl restart docker
     fi

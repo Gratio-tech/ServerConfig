@@ -1,0 +1,26 @@
+---
+syntax: bash
+tags: [ ufw, firewall, web, ru ]
+---
+
+# Статус и текущие правила
+sudo ufw status
+
+# Добавление правила
+ufw allow 443/tcp
+
+# Удаление 443/tcp ALLOW Anywhere (из To-цепочки)
+ufw delete allow 443/tcp
+
+# Перезапуск
+sudo ufw reload
+
+# Разрешить траффик и пинги с конкретного интерфейса (в примере eth1):
+ufw allow in on eth1
+ufw allow out on eth1
+
+#  Разрешить также пинги с конкретного интерфейса (в примере eth1)
+#  В файле sudo nano /etc/ufw/before.rules
+#  После строки # ok icmp codes for INPUT добавить:
+-A ufw-before-input -i eth1 -p icmp --icmp-type echo-request -j ACCEPT
+-A ufw-before-output -o eth1 -p icmp --icmp-type echo-request -j ACCEPT
