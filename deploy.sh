@@ -86,8 +86,12 @@ remote_deploy() {
 }
 
 # --- Проверка флага remote и рут-прав ---
-if [ "${#}" -ge 1 ] && [ "$1" == "-remote" ]; then
-    remote_deploy
+if [ "${#}" -ge 1 ]; then
+    case "$1" in
+        -remote|--remote|-r|--r)
+            remote_deploy
+            ;;
+    esac
 fi
 
 if [ "$EUID" -ne 0 ]; then echo "Требуются права root"; exit 1; fi
@@ -469,10 +473,7 @@ install_packages() {
                 # Важно: это перезаписывает существующий /etc/docker/daemon.json.
                 mkdir -p /etc/docker
                 echo "Для Docker daemon будут установлены DNS 8.8.8.8 и 1.1.1.1"
-                cat <<EOF > /etc/docker/daemon.json
-                { "dns": ["8.8.8.8", "1.1.1.1"] }
-                EOF
-
+                echo '{ "dns": ["8.8.8.8", "1.1.1.1"] }' > /etc/docker/daemon.json
                 systemctl restart docker
             elif [ "$pkg" == "fail2ban" ]; then
                 setup_fail2ban

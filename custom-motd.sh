@@ -82,7 +82,7 @@ echo ""
 printf 'SSH port: %s\n' "$(cyan "$SSH_PORT")"
 
 echo ""
-echo "Открытые порты наружу:"
+echo "Open network ports:"
 echo "--------------------------------------------------"
 
 netstat -tunlp 2>/dev/null | grep -v '127.0.0.' | grep -v '::1' | tail -n +3 | \
