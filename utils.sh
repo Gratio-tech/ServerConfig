@@ -54,8 +54,10 @@ ask_yn() {
 
 # Получение текущего порта SSH из конфига, если база была пропущена
 get_current_ssh_port() {
-    local port=$(grep "^Port " /etc/ssh/sshd_config | awk '{print $2}')
-    echo "${port:-22}"
+    local port
+    port="$(sshd -T 2>/dev/null |
+        awk '$1 == "port" { print $2; exit }')" || true
+    printf '%s\n' "${port:-22}"
 }
 
 shell_quote() {
