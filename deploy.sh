@@ -189,21 +189,27 @@ setup_swap() {
             chmod 600 /swapfile
             mkswap /swapfile
             swapon /swapfile
-            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            grep -qF '/swapfile none swap sw 0 0' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
         fi
 
-        sysctl -w vm.swappiness="$sw_val"
-        sed -i '/vm.swappiness/d' /etc/sysctl.conf
-        echo "vm.swappiness=$sw_val" >> /etc/sysctl.conf
+        local swappiness_conf="/etc/sysctl.d/99-serverconfig-swappiness.conf"
+        install -d -m 0755 /etc/sysctl.d
+        printf 'vm.swappiness = %s\n' "$sw_val" > "$swappiness_conf"
+        sysctl -p "$swappiness_conf"
         echo "Swap настроен (swappiness=$sw_val)."
     fi
 }
 
 setup_journald() {
     echo "----- Настройка логов -----"
-    CONF="/etc/systemd/journald.conf"
-    sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=1G/' $CONF
-    sed -i 's/^#MaxRetentionSec=.*/MaxRetentionSec=60d/' $CONF
+    install -d -m 0755 /etc/systemd/journald.conf.d
+
+    cat > /etc/systemd/journald.conf.d/99-serverconfig.conf <<'EOF'
+[Journal]
+SystemMaxUse=1G
+MaxRetentionSec=60d
+EOF
+
     systemctl restart systemd-journald
     journalctl --vacuum-size=512M --vacuum-time=60d
 }
@@ -459,7 +465,7 @@ install_packages() {
     for pkg in nginx docker unzip certbot fail2ban nvm cheat; do
         if ask_yn "Установить $pkg?" "n"; then
             if [ "$pkg" == "nvm" ]; then
-                curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+                curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/install.sh | bash
             elif [ "$pkg" == "nginx" ]; then
                   install_nginx
             elif [ "$pkg" == "certbot" ]; then
