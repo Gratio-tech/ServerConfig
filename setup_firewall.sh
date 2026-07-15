@@ -107,7 +107,11 @@ setup_firewall() {
         echo "Ошибка: Файл конфигурации $FW_CONFIG не найден."
     fi
 
-    [ "$FW_TOOL" == "ufw" ] && ufw --force enable || firewall-cmd --reload
+    if [ "$FW_TOOL" = "ufw" ]; then
+        ufw --force enable
+    else
+        firewall-cmd --reload
+    fi
     echo "Файрвол настроен (IN: $POLICY_IN, OUT: $POLICY_OUT)."
 }
 
