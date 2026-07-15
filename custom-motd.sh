@@ -96,10 +96,17 @@ awk '{
     printf "  %-6s %-5s %s\n", port, $1, prog
 }' | sort -n
 
-echo "--------------------------------------------------"
-
 if [ -f /var/lib/update-notifier/updates-available ]; then
+    echo "--------------------------------------------------"
+    echo ""
     cat /var/lib/update-notifier/updates-available
+fi
+
+if [ -f /var/run/reboot-required ]; then
+    echo "--------------------------------------------------"
+    echo ""
+    cat /var/run/reboot-required
+    [ -f /var/run/reboot-required.pkgs ] && cat /var/run/reboot-required.pkgs
 fi
 
 # __CUSTOM_USER_BLOCK_START__
